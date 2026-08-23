@@ -1,0 +1,316 @@
+name: Daily Web Scrap
+
+on:
+  schedule:
+    - cron: "1 0 * * *"  # Runs daily at midnight UTC
+  workflow_dispatch:
+    inputs:
+      scraper:
+        description: "Choose which scraper to run"
+        required: true
+        default: "both"
+        options:
+          - "url"
+          - "details"
+          - "both"
+          - "dummy"
+      combine_upload:
+        description: "Choose whether to combine and upload job summaries"
+        required: true
+        default: "yes"
+        options:
+          - "yes"
+          - "no"
+
+jobs:
+  fetch-job-urls:
+    runs-on: ubuntu-latest
+    if: ${{ github.event_name == 'schedule' || github.event.inputs.scraper == 'both' }}
+    concurrency:
+      group: "fetch-job-urls-${{ github.ref }}"
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set Up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Install Dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run Job URL Scraper
+        run: |
+          if ! python script.py; then
+            echo "Job URL scraper failed"
+            exit 1
+          fi
+
+      - name: Commit and Push Job URLs
+        run: |
+          ./update_job_url.sh
+
+      - name: Split Job URLs into Chunks
+        run: python job-summary-splitter.py
+
+      - name: Upload Job URL Chunks as Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: job-urls
+          path: job_urls_*.json
+
+  fetch-job-details:
+    runs-on: ubuntu-latest
+    if: ${{ github.event_name == 'schedule' || github.event.inputs.scraper == 'both' }}
+    concurrency:
+      group: "fetch-job-details-${{ github.ref }}"
+    needs: fetch-job-urls
+    outputs:
+      files: ${{ steps.list_files.outputs.files }}
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Download Job URL Chunks
+        uses: actions/download-artifact@v4
+        with:
+          name: job-urls
+          path: ./job-urls
+
+      - name: List Job URL Chunks
+        id: list_files
+        run: |
+          chmod +x ./list_job_urls.sh
+          ./list_job_urls.sh
+
+  run-job-details:
+    needs: fetch-job-details
+    if: ${{ github.event_name == 'schedule' || github.event.inputs.scraper == 'both' }}
+    runs-on: ubuntu-latest
+    concurrency:
+      group: "run-job-details-${{ github.ref }}-${{ matrix.file.file }}"
+      cancel-in-progress: false
+    strategy:
+      matrix:
+        file: ${{ fromJson(needs.fetch-job-details.outputs.files) }}
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Download Specific File from Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: job-urls
+          path: ./job-urls
+          pattern: ${{ matrix.file.file }}
+
+      - name: Debug Matrix Files
+        run: |
+          echo "Processing file: ${{ matrix.file.file }}"
+          ls -l ./job-urls
+          
+      - name: Set Up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Install Dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run Job Details Scraper
+        run: |
+          chmod +x ./process_job_details.sh
+          ./process_job_details.sh "${{ matrix.file.file }}"
+
+      - name: Upload Job Summary Files as Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: job-summary-${{ github.run_id }}-${{ matrix.file.file }}
+          path: job_summary_*.json
+
+  combine-and-upload:
+    runs-on: ubuntu-latest
+    if: ${{ github.event_name == 'schedule' || github.event.inputs.scraper == 'both' }}
+    concurrency:
+      group: "combine-and-upload-${{ github.ref }}"
+    needs: run-job-details
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Download Job Summary Files
+        uses: actions/download-artifact@v4
+        with:
+          pattern: job-summary*
+          path: ./job-summaries
+
+      - name: Debug Downloaded Files
+        run: ls -l ./job-summaries
+
+      - name: Set Up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Install Dependencies
+        run: pip install -r requirements.txt
+
+      - name: List Files
+        run: |
+          ls -R
+
+      - name: Combine Job Summary Files
+        run: python combine-job-summaries.py
+
+      - name: Upload to Google Drive
+        env:
+          GDRIVE_SERVICE_ACCOUNT_KEY: ${{ secrets.GDRIVE_SERVICE_ACCOUNT_KEY }}
+          GDRIVE_FOLDER_ID: ${{ secrets.GDRIVE_FOLDER_ID }}
+          GDRIVE_SHARE_EMAIL: ${{ secrets.GDRIVE_SHARE_EMAIL }}
+        run: python upload-to-gdrive.py
+
+  manual-fetch-job-urls:
+    runs-on: ubuntu-latest
+    if: ${{ github.event.inputs.scraper == 'url' }}
+    concurrency:
+      group: "fetch-job-urls-${{ github.ref }}"
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set Up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Install Dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run Job URL Scraper
+        run: |
+          if ! python script.py; then
+            echo "Job URL scraper failed"
+            exit 1
+          fi
+
+      - name: Commit and Push Job URLs
+        run: |
+          ./update_job_url.sh
+
+      - name: Split Job URLs into Chunks
+        run: python job-summary-splitter.py
+
+      - name: Upload Job URL Chunks as Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: job-urls
+          path: job_urls_*.json
+
+  manual-fetch-job-details:
+    runs-on: ubuntu-latest
+    if: ${{ github.event.inputs.scraper == 'details' }}
+    concurrency:
+      group: "fetch-job-details-${{ github.ref }}"
+    outputs:
+      files: ${{ steps.list_files.outputs.files }}
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Download Job URL Chunks
+        uses: actions/download-artifact@v4
+        with:
+          name: job-urls
+          path: ./job-urls
+
+      - name: List Job URL Chunks
+        id: list_files
+        run: |
+          chmod +x ./list_job_urls.sh
+          ./list_job_urls.sh
+
+  manual-run-job-details:
+    needs: manual-fetch-job-details
+    runs-on: ubuntu-latest
+    if: ${{ github.event.inputs.scraper == 'details' }}
+    concurrency:
+      group: "run-job-details-${{ github.ref }}-${{ matrix.file.file }}"
+      cancel-in-progress: false
+    strategy:
+      matrix:
+        file: ${{ fromJson(needs.fetch-job-details.outputs.files) }}
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Download Specific File from Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: job-urls
+          path: ./job-urls
+          pattern: ${{ matrix.file.file }}
+
+      - name: Debug Matrix Files
+        run: |
+          echo "Processing file: ${{ matrix.file.file }}"
+          ls -l ./job-urls
+
+      - name: Set Up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Install Dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run Job Details Scraper
+        run: |
+          chmod +x ./process_job_details.sh
+          ./process_job_details.sh "${{ matrix.file.file }}"
+
+      - name: Upload Job Summary Files as Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: job-summary-${{ github.run_id }}-${{ matrix.file.file }}
+          path: job_summary_*.json
+
+  manual-combine-and-upload:
+    runs-on: ubuntu-latest
+    if: ${{ github.event.inputs.scraper != 'both' && github.event.inputs.combine_upload == 'yes' }}
+    concurrency:
+      group: "combine-and-upload-${{ github.ref }}"
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Download Job Summary Files
+        uses: actions/download-artifact@v4
+        with:
+          pattern: job-summary*
+          path: ./job-summaries
+
+      - name: Debug Downloaded Files
+        run: ls -l ./job-summaries
+
+      - name: Set Up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Install Dependencies
+        run: pip install -r requirements.txt
+
+      - name: List Job Summary Files
+        run: |
+          ls -R
+
+      - name: Combine Job Summary Files
+        run: python combine-job-summaries.py
+
+      - name: Upload to Google Drive
+        env:
+          GDRIVE_SERVICE_ACCOUNT_KEY: ${{ secrets.GDRIVE_SERVICE_ACCOUNT_KEY }}
+          GDRIVE_FOLDER_ID: ${{ secrets.GDRIVE_FOLDER_ID }}
+          GDRIVE_SHARE_EMAIL: ${{ secrets.GDRIVE_SHARE_EMAIL }}
+        run: python upload-to-gdrive.py

@@ -1,0 +1,19 @@
+__pycache__/
+*.py[cod]
+
+# Generated scraper outputs
+job_summary.json
+job_summary_*.json
+job_urls_*.json
+job-summaries/
+job-urls/
+greenhouse_job_summary.json
+
+# Local environment / editor files
+.env
+.env.*
+.venv/
+venv/
+.idea/
+.vscode/
+.DS_Store
